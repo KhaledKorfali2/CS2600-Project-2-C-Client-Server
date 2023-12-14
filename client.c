@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <fcntl.h>
 
 #define LENGTH 2048
 
@@ -15,6 +16,7 @@
 volatile sig_atomic_t flag = 0;
 int sockfd = 0;
 char name[32];
+int chat_history_fd;  // File descriptor for chat history
 
 void str_overwrite_stdout() {
     printf("%s", "> ");
@@ -35,13 +37,15 @@ void catch_ctrl_c_and_exit(int sig) {
     flag = 1;
 }
 
-
 void recv_msg_handler() {
     char message[LENGTH] = {};
     while (1) {
         int receive = recv(sockfd, message, LENGTH, 0);
         if (receive > 0) {
-            printf("%s\n", message);
+            // Check if the message is not from the current client
+            if (strncmp(message, name, strlen(name)) != 0) {
+                printf("%s\n", message);
+            }
             str_overwrite_stdout();
         } else if (receive == 0) {
             break;
@@ -90,6 +94,13 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
+    // Open the chat history file or create it if it doesn't exist
+    chat_history_fd = open("chat_history", O_WRONLY | O_APPEND | O_CREAT, S_IRUSR | S_IWUSR);
+    if (chat_history_fd == -1) {
+        perror("ERROR: Unable to open chat_history file");
+        return EXIT_FAILURE;
+    }
+
     struct sockaddr_in server_addr;
 
     /* Socket settings */
@@ -130,6 +141,9 @@ int main(int argc, char **argv) {
     }
 
     close(sockfd);
+
+    // Close the chat history file
+    close(chat_history_fd);
 
     return EXIT_SUCCESS;
 }

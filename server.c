@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <sys/types.h>
 #include <signal.h>
+#include <fcntl.h>
 
 #define MAX_CLIENTS 100
 #define BUFFER_SZ 2048
@@ -16,6 +17,7 @@
 
 static _Atomic unsigned int cli_count = 0;
 static int uid = 10;
+int chat_history_fd;  // File descriptor for chat history
 
 /* Client structure */
 typedef struct {
@@ -53,7 +55,7 @@ void queue_add(client_t *cl) {
     pthread_mutex_unlock(&clients_mutex);
 }
 
-/* Remove clients to queue */
+/* Remove clients from queue */
 void queue_remove(int uid) {
     pthread_mutex_lock(&clients_mutex);
 
@@ -73,11 +75,19 @@ void queue_remove(int uid) {
 void send_message(char *s, int uid, char *name) {
     pthread_mutex_lock(&clients_mutex);
 
+    // Check if it's a server message (join/leave)
+    int is_server_message = (strcmp(name, "Server") == 0);
+
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (clients[i]) {
             if (clients[i]->uid != uid) {
                 char message[BUFFER_SZ + 32];
-                sprintf(message, "%s: %s", name, s);
+                // Format the message based on whether it's a server message or not
+                if (is_server_message) {
+                    sprintf(message, "Server: %s", s);
+                } else {
+                    sprintf(message, "%s: %s", name, s);
+                }
 
                 if (write(clients[i]->sockfd, message, strlen(message)) < 0) {
                     perror("ERROR: write to descriptor failed");
@@ -85,6 +95,22 @@ void send_message(char *s, int uid, char *name) {
                 }
             }
         }
+    }
+
+    // Write to chat history file
+    char history_message[BUFFER_SZ + 32];
+    // Format the message for chat history based on whether it's a server message or not
+    if (is_server_message) {
+        sprintf(history_message, "Server: %s", s);
+    } else {
+        sprintf(history_message, "%s: %s", name, s);
+    }
+
+    if (write(chat_history_fd, history_message, strlen(history_message)) < 0) {
+        perror("ERROR: write to chat history file failed");
+    }
+    if (write(chat_history_fd, "\n", 1) < 0) {
+        perror("ERROR: write to chat history file failed");
     }
 
     pthread_mutex_unlock(&clients_mutex);
@@ -136,7 +162,7 @@ void *handle_client(void *arg) {
         bzero(buff_out, BUFFER_SZ);
     }
 
-    /* Delete client from queue and yield thread */
+    /* Delete client from the queue and yield thread */
     close(cli->sockfd);
     queue_remove(cli->uid);
     free(cli);
@@ -186,6 +212,13 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
+    // Open the chat history file or create it if it doesn't exist
+    chat_history_fd = open("chat_history", O_WRONLY | O_APPEND | O_CREAT, S_IRUSR | S_IWUSR);
+    if (chat_history_fd == -1) {
+        perror("ERROR: Unable to open chat_history file");
+        return EXIT_FAILURE;
+    }
+
     printf("=== WELCOME TO THE CHATROOM ===\n");
 
     while (1) {
@@ -212,6 +245,9 @@ int main(int argc, char **argv) {
         /* Reduce CPU usage */
         sleep(1);
     }
+
+    // Close the chat history file
+    close(chat_history_fd);
 
     return EXIT_SUCCESS;
 }
