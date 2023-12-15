@@ -1,174 +1,254 @@
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
-#include <arpa/inet.h>
+#include <errno.h>
+#include <string.h>
 #include <pthread.h>
+#include <sys/types.h>
+#include <signal.h>
+#include <fcntl.h>
 
-#define PORT 8080
-#define MAX_CLIENTS 10
-#define BUFFER_SIZE 1024
-#define RESPONSE_SIZE 4096
-#define HISTORY_FILE "chat_history"
+#define MAX_CLIENTS 100
+#define BUFFER_SZ 2048
+#define LENGTH 2048
 
-pthread_t tid[MAX_CLIENTS];
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic unsigned int cli_count = 0;
+static int uid = 10;
+int chat_history_fd;  // File descriptor for chat history
 
-struct ThreadArgs {
-    int client_socket;
-};
+/* Client structure */
+typedef struct {
+    struct sockaddr_in address;
+    int sockfd;
+    int uid;
+    char name[32];
+} client_t;
 
-void send_welcome_message(int client_socket, const char *username) {
-    char welcome_message[BUFFER_SIZE];
-    snprintf(welcome_message, sizeof(welcome_message), "Welcome, %s!\n", username);
-    send(client_socket, welcome_message, strlen(welcome_message), 0);
+client_t *clients[MAX_CLIENTS];
+
+pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void str_trim_lf(char *arr, int length) {
+    int i;
+    for (i = 0; i < length; i++) { // trim \n
+        if (arr[i] == '\n') {
+            arr[i] = '\0';
+            break;
+        }
+    }
 }
 
-void broadcast_join_message(const char *username, int new_client_socket) {
-    char join_message[BUFFER_SIZE];
-    snprintf(join_message, sizeof(join_message), "Server: %s has joined the chat\n", username);
-
-    FILE *history_file = fopen(HISTORY_FILE, "a");
-    if (history_file == NULL) {
-        perror("Failed to open chat history file");
-        exit(EXIT_FAILURE);
-    }
-
-    fprintf(history_file, "%s", join_message);
+/* Add clients to queue */
+void queue_add(client_t *cl) {
+    pthread_mutex_lock(&clients_mutex);
 
     for (int i = 0; i < MAX_CLIENTS; ++i) {
-        if (tid[i] != 0 && tid[i] != pthread_self() && tid[i] != new_client_socket) {
-            struct ThreadArgs *threadArgs = (struct ThreadArgs *)tid[i];
-            send(threadArgs->client_socket, join_message, strlen(join_message), 0);
+        if (!clients[i]) {
+            clients[i] = cl;
+            break;
         }
     }
 
-    fclose(history_file);
+    pthread_mutex_unlock(&clients_mutex);
 }
 
-void broadcast_leave_message(const char *username) {
-    char leave_message[BUFFER_SIZE];
-    snprintf(leave_message, sizeof(leave_message), "Server: %s has left the chat\n", username);
-
-    FILE *history_file = fopen(HISTORY_FILE, "a");
-    if (history_file == NULL) {
-        perror("Failed to open chat history file");
-        exit(EXIT_FAILURE);
-    }
-
-    fprintf(history_file, "%s", leave_message);
+/* Remove clients from queue */
+void queue_remove(int uid) {
+    pthread_mutex_lock(&clients_mutex);
 
     for (int i = 0; i < MAX_CLIENTS; ++i) {
-        if (tid[i] != 0 && tid[i] != pthread_self()) {
-            struct ThreadArgs *threadArgs = (struct ThreadArgs *)tid[i];
-            send(threadArgs->client_socket, leave_message, strlen(leave_message), 0);
+        if (clients[i]) {
+            if (clients[i]->uid == uid) {
+                clients[i] = NULL;
+                break;
+            }
         }
     }
 
-    fclose(history_file);
+    pthread_mutex_unlock(&clients_mutex);
 }
 
+/* Send message to all clients except sender */
+void send_message(char *s, int uid, char *name) {
+    pthread_mutex_lock(&clients_mutex);
+
+    // Check if it's a server message (join/leave)
+    int is_server_message = (strcmp(name, "Server") == 0);
+
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        if (clients[i]) {
+            if (clients[i]->uid != uid) {
+                char message[BUFFER_SZ + 32];
+                // Format the message based on whether it's a server message or not
+                if (is_server_message) {
+                    sprintf(message, "Server: %s", s);
+                } else {
+                    sprintf(message, "%s: %s", name, s);
+                }
+
+                if (write(clients[i]->sockfd, message, strlen(message)) < 0) {
+                    perror("ERROR: write to descriptor failed");
+                    break;
+                }
+            }
+        }
+    }
+
+    // Write to chat history file
+    char history_message[BUFFER_SZ + 32];
+    // Format the message for chat history based on whether it's a server message or not
+    if (is_server_message) {
+        sprintf(history_message, "Server: %s", s);
+    } else {
+        sprintf(history_message, "%s: %s", name, s);
+    }
+
+    if (write(chat_history_fd, history_message, strlen(history_message)) < 0) {
+        perror("ERROR: write to chat history file failed");
+    }
+    if (write(chat_history_fd, "\n", 1) < 0) {
+        perror("ERROR: write to chat history file failed");
+    }
+
+    pthread_mutex_unlock(&clients_mutex);
+}
+
+/* Handle all communication with the client */
 void *handle_client(void *arg) {
-    struct ThreadArgs *threadArgs = (struct ThreadArgs *)arg;
-    int client_socket = threadArgs->client_socket;
-    char buffer[BUFFER_SIZE];
-    char username[BUFFER_SIZE];
+    char buff_out[BUFFER_SZ];
+    char name[32];
+    int leave_flag = 0;
 
-    ssize_t username_length = recv(client_socket, username, sizeof(username), 0);
-    if (username_length <= 0) {
-        close(client_socket);
-        free(threadArgs);
-        pthread_exit(NULL);
+    cli_count++;
+    client_t *cli = (client_t *)arg;
+
+    // Name
+    if (recv(cli->sockfd, name, 32, 0) <= 0 || strlen(name) < 2 || strlen(name) >= 32 - 1) {
+        printf("Didn't enter the name.\n");
+        leave_flag = 1;
+    } else {
+        strcpy(cli->name, name);
+        sprintf(buff_out, "%s has joined\n", cli->name);
+        printf("%s", buff_out);
+        send_message(buff_out, cli->uid, "Server");
     }
 
-    username[username_length] = '\0';
-
-    pthread_mutex_lock(&mutex);
-    broadcast_join_message(username, client_socket);
-    send_welcome_message(client_socket, username);
-    pthread_mutex_unlock(&mutex);
+    bzero(buff_out, BUFFER_SZ);
 
     while (1) {
-        ssize_t received = recv(client_socket, buffer, sizeof(buffer), 0);
-        if (received <= 0) {
+        if (leave_flag) {
             break;
         }
 
-        buffer[received] = '\0';
+        int receive = recv(cli->sockfd, buff_out, BUFFER_SZ, 0);
+        if (receive > 0) {
+            if (strlen(buff_out) > 0) {
+                send_message(buff_out, cli->uid, cli->name);
 
-        FILE *history_file = fopen(HISTORY_FILE, "a");
-        if (history_file == NULL) {
-            perror("Failed to open chat history file");
-            exit(EXIT_FAILURE);
+                str_trim_lf(buff_out, strlen(buff_out));
+                printf("%s -> %s: %s\n", cli->name, cli->name, buff_out);
+            }
+        } else if (receive == 0 || strcmp(buff_out, "exit") == 0) {
+            send_message("has left", cli->uid, cli->name);
+            leave_flag = 1;
+        } else {
+            printf("ERROR: -1\n");
+            leave_flag = 1;
         }
 
-        fprintf(history_file, "%s said: %s\n", username, buffer);
-
-        char response[RESPONSE_SIZE];
-        snprintf(response, sizeof(response), "%s said: %s", username, buffer);
-        send(client_socket, response, strlen(response), 0);
-
-        fclose(history_file);
+        bzero(buff_out, BUFFER_SZ);
     }
 
-    pthread_mutex_lock(&mutex);
-    broadcast_leave_message(username);
-    pthread_mutex_unlock(&mutex);
+    /* Delete client from the queue and yield thread */
+    close(cli->sockfd);
+    queue_remove(cli->uid);
+    free(cli);
+    cli_count--;
+    pthread_detach(pthread_self());
 
-    close(client_socket);
-    free(threadArgs);
-    pthread_exit(NULL);
+    return NULL;
 }
 
-int main(int argc, char *argv[]) {
-    int server_socket, client_socket;
-    struct sockaddr_in server_address, client_address;
-    socklen_t address_len = sizeof(client_address);
-
-    if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-        perror("Socket creation failed");
-        exit(EXIT_FAILURE);
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        printf("Usage: %s <port>\n", argv[0]);
+        return EXIT_FAILURE;
     }
 
-    server_address.sin_family = AF_INET;
-    server_address.sin_addr.s_addr = INADDR_ANY;
-    server_address.sin_port = htons(PORT);
+    char *ip = "127.0.0.1";
+    int port = atoi(argv[1]);
+    int option = 1;
+    int listenfd = 0, connfd = 0;
+    struct sockaddr_in serv_addr;
+    struct sockaddr_in cli_addr;
+    pthread_t tid;
 
-    if (bind(server_socket, (struct sockaddr *)&server_address, sizeof(server_address)) == -1) {
-        perror("Binding failed");
-        exit(EXIT_FAILURE);
+    /* Socket settings */
+    listenfd = socket(AF_INET, SOCK_STREAM, 0);
+    serv_addr.sin_family = AF_INET;
+    serv_addr.sin_addr.s_addr = inet_addr(ip);
+    serv_addr.sin_port = htons(port);
+
+    /* Ignore pipe signals */
+    signal(SIGPIPE, SIG_IGN);
+
+    if (setsockopt(listenfd, SOL_SOCKET, (SO_REUSEPORT | SO_REUSEADDR), (char *)&option, sizeof(option)) < 0) {
+        perror("ERROR: setsockopt failed");
+        return EXIT_FAILURE;
     }
 
-    if (listen(server_socket, MAX_CLIENTS) == -1) {
-        perror("Listening failed");
-        exit(EXIT_FAILURE);
+    /* Bind */
+    if (bind(listenfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        perror("ERROR: Socket binding failed");
+        return EXIT_FAILURE;
     }
 
-    printf("Server listening on port %d...\n", PORT);
+    /* Listen */
+    if (listen(listenfd, 10) < 0) {
+        perror("ERROR: Socket listening failed");
+        return EXIT_FAILURE;
+    }
 
-    int i = 0;
+    // Open the chat history file or create it if it doesn't exist
+    chat_history_fd = open("chat_history", O_WRONLY | O_APPEND | O_CREAT, S_IRUSR | S_IWUSR);
+    if (chat_history_fd == -1) {
+        perror("ERROR: Unable to open chat_history file");
+        return EXIT_FAILURE;
+    }
+
+    printf("=== WELCOME TO THE CHATROOM ===\n");
+
     while (1) {
-        if ((client_socket = accept(server_socket, (struct sockaddr *)&client_address, &address_len)) == -1) {
-            perror("Acceptance failed");
-            exit(EXIT_FAILURE);
+        socklen_t clilen = sizeof(cli_addr);
+        connfd = accept(listenfd, (struct sockaddr *)&cli_addr, &clilen);
+
+        /* Check if max clients are reached */
+        if ((cli_count + 1) == MAX_CLIENTS) {
+            printf("Max clients reached. Rejected.\n");
+            close(connfd);
+            continue;
         }
 
-        struct ThreadArgs *threadArgs = (struct ThreadArgs *)malloc(sizeof(struct ThreadArgs));
-        if (threadArgs == NULL) {
-            perror("Thread arguments allocation failed");
-            exit(EXIT_FAILURE);
-        }
-        threadArgs->client_socket = client_socket;
+        /* Client settings */
+        client_t *cli = (client_t *)malloc(sizeof(client_t));
+        cli->address = cli_addr;
+        cli->sockfd = connfd;
+        cli->uid = uid++;
 
-        if (pthread_create(&tid[i], NULL, handle_client, (void *)threadArgs) != 0) {
-            perror("Thread creation failed");
-            exit(EXIT_FAILURE);
-        }
+        /* Add client to the queue and fork thread */
+        queue_add(cli);
+        pthread_create(&tid, NULL, &handle_client, (void *)cli);
 
-        i = (i + 1) % MAX_CLIENTS; // Circular buffer
+        /* Reduce CPU usage */
+        sleep(1);
     }
 
-    close(server_socket);
-    return 0;
+    // Close the chat history file
+    close(chat_history_fd);
+
+    return EXIT_SUCCESS;
 }
 
