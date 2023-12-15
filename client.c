@@ -19,7 +19,7 @@ char name[32];
 int chat_history_fd;  // File descriptor for chat history
 
 void str_overwrite_stdout() {
-    printf("%s", "> ");
+    printf("\r%s", "> ");
     fflush(stdout);
 }
 

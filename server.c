@@ -80,19 +80,22 @@ void send_message(char *s, int uid, char *name) {
 
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (clients[i]) {
-            if (clients[i]->uid != uid) {
-                char message[BUFFER_SZ + 32];
-                // Format the message based on whether it's a server message or not
-                if (is_server_message) {
-                    sprintf(message, "Server: %s", s);
+            char message[BUFFER_SZ + 32];
+            // Format the message based on whether it's a server message or not
+            if (is_server_message) {
+                sprintf(message, "Server: %s", s);
+            } else {
+                // Identify the sender client and format the message accordingly
+                if (clients[i]->uid == uid) {
+                    sprintf(message, "%s: %s", name, s);
                 } else {
                     sprintf(message, "%s: %s", name, s);
                 }
+            }
 
-                if (write(clients[i]->sockfd, message, strlen(message)) < 0) {
-                    perror("ERROR: write to descriptor failed");
-                    break;
-                }
+            if (write(clients[i]->sockfd, message, strlen(message)) < 0) {
+                perror("ERROR: write to descriptor failed");
+                break;
             }
         }
     }
@@ -103,6 +106,7 @@ void send_message(char *s, int uid, char *name) {
     if (is_server_message) {
         sprintf(history_message, "Server: %s", s);
     } else {
+        // Identify the sender client and format the message accordingly
         sprintf(history_message, "%s: %s", name, s);
     }
 
@@ -146,13 +150,18 @@ void *handle_client(void *arg) {
         int receive = recv(cli->sockfd, buff_out, BUFFER_SZ, 0);
         if (receive > 0) {
             if (strlen(buff_out) > 0) {
-                send_message(buff_out, cli->uid, cli->name);
-
                 str_trim_lf(buff_out, strlen(buff_out));
-                printf("%s -> %s: %s\n", cli->name, cli->name, buff_out);
+
+                // Display the message with "You:" prefix for the sending client
+                if (cli->uid == uid) {
+                    printf("You: %s\n", buff_out);
+                    send_message(buff_out, cli->uid, cli->name);
+                } else {
+                    send_message(buff_out, cli->uid, cli->name);
+                    printf("%s -> %s: %s\n", cli->name, (cli->uid == uid) ? "You" : cli->name, buff_out);
+                }
             }
         } else if (receive == 0 || strcmp(buff_out, "exit") == 0) {
-            send_message("has left", cli->uid, cli->name);
             leave_flag = 1;
         } else {
             printf("ERROR: -1\n");
@@ -161,6 +170,11 @@ void *handle_client(void *arg) {
 
         bzero(buff_out, BUFFER_SZ);
     }
+
+    /* Notify that the client has left */
+    sprintf(buff_out, "%s has left\n", cli->name);
+    printf("%s", buff_out);
+    send_message(buff_out, cli->uid, "Server");
 
     /* Delete client from the queue and yield thread */
     close(cli->sockfd);
@@ -171,6 +185,7 @@ void *handle_client(void *arg) {
 
     return NULL;
 }
+
 
 int main(int argc, char **argv) {
     if (argc != 2) {
