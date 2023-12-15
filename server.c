@@ -87,7 +87,7 @@ void send_message(char *s, int uid, char *name) {
             } else {
                 // Identify the sender client and format the message accordingly
                 if (clients[i]->uid == uid) {
-                    sprintf(message, "%s: %s", name, s);
+                    sprintf(message, "You: %s", s);
                 } else {
                     sprintf(message, "%s: %s", name, s);
                 }
@@ -100,21 +100,20 @@ void send_message(char *s, int uid, char *name) {
         }
     }
 
-    // Write to chat history file
-    char history_message[BUFFER_SZ + 32];
-    // Format the message for chat history based on whether it's a server message or not
-    if (is_server_message) {
-        sprintf(history_message, "Server: %s", s);
-    } else {
-        // Identify the sender client and format the message accordingly
-        sprintf(history_message, "%s: %s", name, s);
-    }
-
-    if (write(chat_history_fd, history_message, strlen(history_message)) < 0) {
-        perror("ERROR: write to chat history file failed");
-    }
-    if (write(chat_history_fd, "\n", 1) < 0) {
-        perror("ERROR: write to chat history file failed");
+    // Write the original message to chat history file
+    if (!is_server_message) {
+        if (write(chat_history_fd, name, strlen(name)) < 0) {
+            perror("ERROR: write to chat history file failed");
+        }
+        if (write(chat_history_fd, ": ", 2) < 0) {
+            perror("ERROR: write to chat history file failed");
+        }
+        if (write(chat_history_fd, s, strlen(s)) < 0) {
+            perror("ERROR: write to chat history file failed");
+        }
+        if (write(chat_history_fd, "\n", 1) < 0) {
+            perror("ERROR: write to chat history file failed");
+        }
     }
 
     pthread_mutex_unlock(&clients_mutex);
@@ -154,7 +153,7 @@ void *handle_client(void *arg) {
 
                 // Display the message with "You:" prefix for the sending client
                 if (cli->uid == uid) {
-                    printf("You: %s\n", buff_out);
+                    printf("> You: %s\n", buff_out);
                     send_message(buff_out, cli->uid, cli->name);
                 } else {
                     send_message(buff_out, cli->uid, cli->name);
@@ -185,7 +184,6 @@ void *handle_client(void *arg) {
 
     return NULL;
 }
-
 
 int main(int argc, char **argv) {
     if (argc != 2) {
