@@ -153,11 +153,10 @@ void *handle_client(void *arg) {
 
                 // Display the message with "You:" prefix for the sending client
                 if (cli->uid == uid) {
-                    printf("> You: %s\n", buff_out);
                     send_message(buff_out, cli->uid, cli->name);
                 } else {
-                    send_message(buff_out, cli->uid, cli->name);
                     printf("%s -> %s: %s\n", cli->name, (cli->uid == uid) ? "You" : cli->name, buff_out);
+                    send_message(buff_out, cli->uid, cli->name);
                 }
             }
         } else if (receive == 0 || strcmp(buff_out, "exit") == 0) {
