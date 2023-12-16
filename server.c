@@ -1,23 +1,25 @@
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <errno.h>
-#include <string.h>
-#include <pthread.h>
-#include <sys/types.h>
-#include <signal.h>
-#include <fcntl.h>
+#include <sys/socket.h> // Socket programming functions
+#include <netinet/in.h> // Internet address family functions
+#include <arpa/inet.h>  // Functions for manipulating IP addresses
+#include <stdio.h>      // Standard Input and Output functions
+#include <stdlib.h>     // Standard Library functions
+#include <unistd.h>     // POSIX operating system API
+#include <errno.h>      // Error Handling
+#include <string.h>     // String manipulation functions
+#include <pthread.h>    // POSIX threads for multithreading
+#include <sys/types.h>  // Data types used in system calls
+#include <signal.h>     // Signal handling functions
+#include <fcntl.h>      // File control options
 
-#define MAX_CLIENTS 100
-#define BUFFER_SZ 2048
-#define LENGTH 2048
+// Pre-processors and constants
+#define MAX_CLIENTS 100 // Maximum number of clients the server can handle
+#define BUFFER_SZ 2048  // Maximum buffer size for messages
+#define LENGTH 2048     // Maximum length for various strings
 
-static _Atomic unsigned int cli_count = 0;
-static int uid = 10;
-int chat_history_fd;  // File descriptor for chat history
+
+static _Atomic unsigned int cli_count = 0;  // Atomic variable to keep track of the number of connected clients
+static int uid = 10;                        // User ID counter, starting from 10 to avoid conflicts with system IDs
+int chat_history_fd;                        // File descriptor for chat history
 
 /* Client structure */
 typedef struct {
@@ -27,57 +29,74 @@ typedef struct {
     char name[32];
 } client_t;
 
-client_t *clients[MAX_CLIENTS];
+client_t *clients[MAX_CLIENTS];             // Array to store client information structures (client_t) for all connected clients
 
-pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;  // Mutex to control access to the clients array to prevent data race conditions
 
+
+// Function to trim trailing newline character from a string
 void str_trim_lf(char *arr, int length) {
     int i;
-    for (i = 0; i < length; i++) { // trim \n
-        if (arr[i] == '\n') {
-            arr[i] = '\0';
-            break;
+    for (i = 0; i < length; i++) { // Iterate through the characters in the array
+        if (arr[i] == '\n') {     // Check if the current character is a newline character
+            arr[i] = '\0';        // Replace the newline character with null terminator
+            break;                // Break out of the loop after trimming the newline
         }
     }
 }
 
-/* Add clients to queue */
+// Function to add a client to the array of connected clients
 void queue_add(client_t *cl) {
+    // Lock the mutex to ensure exclusive access to the clients array
     pthread_mutex_lock(&clients_mutex);
 
+    // Iterate through the clients array to find an available slot
     for (int i = 0; i < MAX_CLIENTS; ++i) {
+        // Check if the current slot is empty (NULL)
         if (!clients[i]) {
+            // Assign the client structure to the empty slot
             clients[i] = cl;
+            // Break out of the loop after adding the client
             break;
         }
     }
 
+    // Unlock the mutex to allow other threads to access the clients array
     pthread_mutex_unlock(&clients_mutex);
 }
 
-/* Remove clients from queue */
+// Function to remove a client from the array of connected clients based on UID
 void queue_remove(int uid) {
+    // Lock the mutex to ensure exclusive access to the clients array
     pthread_mutex_lock(&clients_mutex);
 
+    // Iterate through the clients array to find the client with the specified UID
     for (int i = 0; i < MAX_CLIENTS; ++i) {
+        // Check if the current slot is not empty (non-NULL)
         if (clients[i]) {
+            // Check if the UID of the current client matches the specified UID
             if (clients[i]->uid == uid) {
+                // Set the slot to NULL to remove the client from the array
                 clients[i] = NULL;
+                // Break out of the loop after removing the client
                 break;
             }
         }
     }
 
+    // Unlock the mutex to allow other threads to access the clients array
     pthread_mutex_unlock(&clients_mutex);
 }
 
-/* Send message to all clients except sender */
+// Function to send a message to all clients except the sender
 void send_message(char *s, int uid, char *name) {
+    // Lock the mutex to ensure exclusive access to the clients array
     pthread_mutex_lock(&clients_mutex);
 
     // Check if it's a server message (join/leave)
     int is_server_message = (strcmp(name, "Server") == 0);
-
+    
+    // Iterate through the clients array to send the message to each connected client
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (clients[i]) {
             char message[BUFFER_SZ + 32];
@@ -116,23 +135,28 @@ void send_message(char *s, int uid, char *name) {
         }
     }
 
+    // Unlock the mutex to allow other threads to access the clients array
     pthread_mutex_unlock(&clients_mutex);
 }
 
-/* Handle all communication with the client */
+
+// Thread function to handle communication with a client
 void *handle_client(void *arg) {
     char buff_out[BUFFER_SZ];
     char name[32];
     int leave_flag = 0;
 
-    cli_count++;
-    client_t *cli = (client_t *)arg;
+    cli_count++; // Increment the count of connected clients
 
-    // Name
+    client_t *cli = (client_t *)arg; // Cast the argument to a client structure
+    
+    
+    // Get the client's name
     if (recv(cli->sockfd, name, 32, 0) <= 0 || strlen(name) < 2 || strlen(name) >= 32 - 1) {
         printf("Didn't enter the name.\n");
         leave_flag = 1;
     } else {
+        // Assign the client's name and send a join message to all clients
         strcpy(cli->name, name);
         sprintf(buff_out, "%s has joined\n", cli->name);
         printf("%s", buff_out);
@@ -150,34 +174,42 @@ void *handle_client(void *arg) {
             perror("ERROR: write to chat history file failed");
         }
     }
-
+    // Clear the output buffer
     bzero(buff_out, BUFFER_SZ);
 
     while (1) {
+        // Check if the client wants to leave
         if (leave_flag) {
             break;
         }
 
+        // Receive a message from the client
         int receive = recv(cli->sockfd, buff_out, BUFFER_SZ, 0);
         if (receive > 0) {
+             // Check if the received message is not empty
             if (strlen(buff_out) > 0) {
+                // Trim the trailing newline character from the message
                 str_trim_lf(buff_out, strlen(buff_out));
 
                 // Display the message with "You:" prefix for the sending client
                 if (cli->uid == uid) {
                     send_message(buff_out, cli->uid, cli->name);
                 } else {
+                    // Display the message with sender information for other clients
                     printf("%s -> %s: %s\n", cli->name, (cli->uid == uid) ? "You" : cli->name, buff_out);
                     send_message(buff_out, cli->uid, cli->name);
                 }
             }
         } else if (receive == 0 || strcmp(buff_out, "exit") == 0) {
+            // If the client disconnected or sent an exit command, set the leave flag
             leave_flag = 1;
         } else {
+            // Handle the case when receive returns -1 (error)
             printf("ERROR: -1\n");
             leave_flag = 1;
         }
 
+        // Clear the output buffer
         bzero(buff_out, BUFFER_SZ);
     }
 
@@ -202,8 +234,11 @@ void *handle_client(void *arg) {
     queue_remove(cli->uid);
     free(cli);
     cli_count--;
-    pthread_detach(pthread_self());
 
+    // Detach the thread
+    pthread_detach(pthread_self());
+    
+    // Return NULL to indicate the thread's completion
     return NULL;
 }
 

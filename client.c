@@ -20,17 +20,19 @@ int chat_history_fd;              // File descriptor for chat history
 
 // Function to overwrite stdout for a cleaner console output
 void str_overwrite_stdout() {
+    // Move the cursor to the beginning of the line and print the prompt
     printf("\r%s", "> ");
+    // Flush the standard output stream to ensure the prompt is immediately displayed
     fflush(stdout);
 }
 
 // Function to trim trailing newline character from a string
 void str_trim_lf(char *arr, int length) {
     int i;
-    for (i = 0; i < length; i++) { // trim \n
-        if (arr[i] == '\n') {
-            arr[i] = '\0';
-            break;
+    for (i = 0; i < length; i++) { // Iterate through the characters in the array
+        if (arr[i] == '\n') {       // Check if the current character is a newline character
+            arr[i] = '\0';          // Replace the newline character with null terminator
+            break;                  // Break out of the loop after trimming the newline
         }
     }
 }
@@ -43,21 +45,25 @@ void catch_ctrl_c_and_exit(int sig) {
 // Thread function to handle receiving messages from the server
 void recv_msg_handler() {
     char message[LENGTH] = {};
+    
+    // Continuous loop to receive messages
     while (1) {
+        // Receive a message from the server
         int receive = recv(sockfd, message, LENGTH, 0);
         if (receive > 0) {
             // Check if the message is not from the current client
             if (strncmp(message, name, strlen(name)) != 0) {
-                printf("%s\n", message);
+                printf("%s\n", message);    // Print the received message to the console
             }
-            str_overwrite_stdout();
+            str_overwrite_stdout();         // Update the console prompt
         } else if (receive == 0) {
-            // Connection closed by the server
+            // Connection closed by the server, break out of loop
             break;
         } else {
             // Handle the case when recv returns -1 (error)
             perror("ERROR: receive");
         }
+        // Clear the message buffer
         memset(message, 0, sizeof(message));
     }
 }
