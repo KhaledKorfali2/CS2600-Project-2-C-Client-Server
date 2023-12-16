@@ -71,7 +71,6 @@ void queue_remove(int uid) {
     pthread_mutex_unlock(&clients_mutex);
 }
 
-
 /* Send message to all clients except sender */
 void send_message(char *s, int uid, char *name) {
     pthread_mutex_lock(&clients_mutex);
@@ -88,7 +87,7 @@ void send_message(char *s, int uid, char *name) {
             } else {
                 // Identify the sender client and format the message accordingly
                 if (clients[i]->uid == uid) {
-                    sprintf(message, "%s: %s", name, s);
+                    sprintf(message, "You: %s", s);
                 } else {
                     sprintf(message, "%s: %s", name, s);
                 }
@@ -101,7 +100,7 @@ void send_message(char *s, int uid, char *name) {
         }
     }
 
-    // Write the message to chat history file
+    // Write the original message to chat history file
     if (!is_server_message) {
         if (write(chat_history_fd, name, strlen(name)) < 0) {
             perror("ERROR: write to chat history file failed");
@@ -138,6 +137,7 @@ void *handle_client(void *arg) {
         sprintf(buff_out, "%s has joined\n", cli->name);
         printf("%s", buff_out);
         send_message(buff_out, cli->uid, "Server");
+
 
         // Write the join message to chat history
         if (write(chat_history_fd, "Server: ", 9) < 0) {
@@ -197,6 +197,7 @@ void *handle_client(void *arg) {
         perror("ERROR: write to chat history file failed");
     }
 
+    /* Delete client from the queue and yield thread */
     close(cli->sockfd);
     queue_remove(cli->uid);
     free(cli);
@@ -206,7 +207,6 @@ void *handle_client(void *arg) {
     return NULL;
 }
 
-/* Main function of the server */
 int main(int argc, char **argv) {
     if (argc != 2) {
         printf("Usage: %s <port>\n", argv[0]);
@@ -224,7 +224,7 @@ int main(int argc, char **argv) {
     /* Socket settings */
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
     serv_addr.sin_family = AF_INET;
-    serv_addr.sin_addr.s_addr = INADDR_ANY;  // Allow connections from any IP
+    serv_addr.sin_addr.s_addr = inet_addr(ip);
     serv_addr.sin_port = htons(port);
 
     /* Ignore pipe signals */
@@ -286,4 +286,3 @@ int main(int argc, char **argv) {
 
     return EXIT_SUCCESS;
 }
-
