@@ -66,11 +66,7 @@ void send_msg_handler() {
         if (strcmp(message, "exit") == 0) {
             break;
         } else {
-            // Send the message
             send(sockfd, message, strlen(message), 0);
-
-            // Clear the input line on the sender's terminal
-            printf("\033[A\033[K");
         }
 
         bzero(message, LENGTH);
@@ -151,4 +147,3 @@ int main(int argc, char **argv) {
 
     return EXIT_SUCCESS;
 }
-
